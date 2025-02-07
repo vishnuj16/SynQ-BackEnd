@@ -60,21 +60,115 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
         message_type = content.get('message_type')
 
-        if message_type == 'channel_message':
-            print("Handling channel message")
-            await self.handle_channel_message(content)
-        elif message_type == 'direct_message':
-            print("Handling direct message")
-            await self.handle_direct_message(content)
-        elif message_type == 'join_team':
-            print("Handling join team request")
-            await self.handle_join_team(content)
-        elif message_type == 'leave_team':
-            print("Handling leave team request")
-            await self.handle_leave_team(content)
-        elif message_type == 'team_notification':
-            print("Handling team notification")
-            await self.handle_team_notification(content)
+        handlers = {
+            'channel_message': self.handle_channel_message,
+            'direct_message': self.handle_direct_message,
+            'join_team': self.handle_join_team,
+            'leave_team': self.handle_leave_team,
+            'team_notification': self.handle_team_notification,
+            'create_channel': self.handle_create_channel,
+            'add_team_member': self.handle_add_team_member,
+            'get_channel_messages': self.handle_get_channel_messages,
+            'get_direct_messages': self.handle_get_direct_messages,
+            'get_team_channels': self.handle_get_team_channels,
+            'get_team_members': self.handle_get_team_members,
+            'get_interacted_users': self.handle_get_interacted_users
+        }
+
+        handler = handlers.get(message_type)
+        if handler:
+            await handler(content)
+        else:
+            print(f"Unknown message type: {message_type}")
+    
+    async def handle_direct_message(self, content):
+        recipient_id = content.get('recipient')
+        message_text = content.get('content')
+
+        if not all([recipient_id, message_text]):
+            return
+
+        message = await self.save_direct_message(recipient_id, message_text)
+        if message:
+            # Send to recipient's personal group
+            await self.channel_layer.group_send(
+                f"user_{recipient_id}",
+                {
+                    "type": "chat.message",
+                    "message": {
+                        "id": message.id,
+                        "sender": self.user.username,
+                        "content": message_text,
+                        "timestamp": str(message.created_at),
+                        "message_type": "direct",
+                        "recipient_id": recipient_id
+                    }
+                }
+            )
+    
+    async def handle_add_team_member(self, content):
+        team_id = content.get('team_id')
+        user_id = content.get('user_id')
+        
+        if await self.validate_team_membership(team_id):
+            success = await self.add_team_member(team_id, user_id)
+            if success:
+                await self.channel_layer.group_send(
+                    f"team_{team_id}",
+                    {
+                        "type": "member.added",
+                        "data": {
+                            "team_id": team_id,
+                            "user_id": user_id
+                        }
+                    }
+                )
+    
+    async def handle_get_channel_messages(self, content):
+        channel_id = content.get('channel_id')
+        if await self.validate_team_channel_access(channel_id):
+            messages = await self.get_channel_messages(channel_id)
+            await self.send_json({
+                "type": "channel_messages",
+                "channel_id": channel_id,
+                "messages": messages
+            })
+    
+    async def handle_get_direct_messages(self, content):
+        user_id = content.get('user_id')
+        messages = await self.get_direct_messages(user_id)
+        await self.send_json({
+            "type": "direct_messages",
+            "user_id": user_id,
+            "messages": messages
+        })
+
+    async def handle_get_team_channels(self, content):
+        team_id = content.get('team_id')
+        if await self.validate_team_membership(team_id):
+            channels = await self.get_team_channels(team_id)
+            await self.send_json({
+                "type": "team_channels",
+                "team_id": team_id,
+                "channels": channels
+            })
+    
+    async def handle_get_team_members(self, content):
+        team_id = content.get('team_id')
+        if await self.validate_team_membership(team_id):
+            members = await self.get_team_members(team_id)
+            await self.send_json({
+                "type": "team_members",
+                "team_id": team_id,
+                "members": members
+            })
+    
+    async def handle_get_interacted_users(self, content):
+        users = await self.get_interacted_users()
+        await self.send_json({
+            "type": "interacted_users",
+            "users": users
+        })
 
 
     async def handle_channel_message(self, content):
@@ -118,6 +212,24 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             )
             print("Message sent to channel group")
 
+    async def handle_create_channel(self, content):
+        team_id = content.get('team_id')
+        channel_name = content.get('name')
+        
+        if await self.validate_team_membership(team_id):
+            channel = await self.create_channel(team_id, channel_name)
+            if channel:
+                await self.channel_layer.group_send(
+                    f"team_{team_id}",
+                    {
+                        "type": "channel.created",
+                        "channel": {
+                            "id": channel.id,
+                            "name": channel.name,
+                            "team_id": team_id
+                        }
+                    }
+                )
 
     async def handle_team_notification(self, content):
         team_id = content.get('team_id')
@@ -208,3 +320,91 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
     @database_sync_to_async
     def is_team_member(self, team_id):
         return Team.objects.filter(id=team_id, members=self.user).exists()
+
+    @database_sync_to_async
+    def create_channel(self, team_id, channel_name):
+        team = Team.objects.get(id=team_id)
+        channel = Channel.objects.create(team=team, name=channel_name)
+        channel.members.set(team.members.all())
+        return channel
+
+    @database_sync_to_async
+    def add_team_member(self, team_id, user_id):
+        try:
+            team = Team.objects.get(id=team_id)
+            user = User.objects.get(id=user_id)
+            team.members.add(user)
+            # Add user to all team channels
+            for channel in team.channels.all():
+                channel.members.add(user)
+            return True
+        except (Team.DoesNotExist, User.DoesNotExist):
+            return False
+    
+    @database_sync_to_async
+    def get_channel_messages(self, channel_id):
+        messages = Message.objects.filter(channel_id=channel_id).order_by('created_at')
+        return [
+            {
+                "id": msg.id,
+                "content": msg.content,
+                "sender": msg.sender.username,
+                "timestamp": str(msg.created_at)
+            }
+            for msg in messages
+        ]
+    
+    @database_sync_to_async
+    def get_direct_messages(self, user_id):
+        messages = Message.objects.filter(
+            Q(message_type='direct') &
+            (Q(sender=self.user, recipient_id=user_id) | 
+             Q(sender_id=user_id, recipient=self.user))
+        ).order_by('created_at')
+        return [
+            {
+                "id": msg.id,
+                "content": msg.content,
+                "sender": msg.sender.username,
+                "recipient": msg.recipient.username,
+                "timestamp": str(msg.created_at)
+            }
+            for msg in messages
+        ]
+    
+    @database_sync_to_async
+    def get_team_channels(self, team_id):
+        channels = Channel.objects.filter(team_id=team_id)
+        return [
+            {
+                "id": channel.id,
+                "name": channel.name,
+                "team_id": team_id
+            }
+            for channel in channels
+        ]
+    
+    @database_sync_to_async
+    def get_team_members(self, team_id):
+        team = Team.objects.get(id=team_id)
+        return [
+            {
+                "id": user.id,
+                "username": user.username
+            }
+            for user in team.members.all()
+        ]
+
+    @database_sync_to_async
+    def get_interacted_users(self):
+        interacted_users = User.objects.filter(
+            Q(sent_messages__recipient=self.user, sent_messages__message_type='direct') | 
+            Q(received_messages__sender=self.user, received_messages__message_type='direct')
+        ).distinct()
+        return [
+            {
+                "id": user.id,
+                "username": user.username
+            }
+            for user in interacted_users
+        ]

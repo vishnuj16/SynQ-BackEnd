@@ -5,9 +5,6 @@ from . import consumers
 
 websocket_urlpatterns = [
     re_path(r'ws/chat/$', consumers.ChatConsumer.as_asgi()),
-    re_path(r'ws/team/(?P<team_id>\w+)/$', consumers.ChatConsumer.as_asgi()),
-    re_path(r'ws/channel/(?P<channel_id>\w+)/$', consumers.ChatConsumer.as_asgi()),
-    re_path(r'ws/dm/(?P<user_id>\w+)/$', consumers.ChatConsumer.as_asgi()),
 ]
 
 # application = ProtocolTypeRouter({
