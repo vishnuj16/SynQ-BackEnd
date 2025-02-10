@@ -63,8 +63,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         handlers = {
             'channel_message': self.handle_channel_message,
             'direct_message': self.handle_direct_message,
-            'join_team': self.handle_join_team,
-            'leave_team': self.handle_leave_team,
+            # 'join_team': self.handle_join_team,
+            # 'leave_team': self.handle_leave_team,
             'team_notification': self.handle_team_notification,
             'create_channel': self.handle_create_channel,
             'add_team_member': self.handle_add_team_member,
@@ -88,13 +88,14 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         if not all([recipient_id, message_text]):
             return
 
+        print("test")
         message = await self.save_direct_message(recipient_id, message_text)
         if message:
             # Send to recipient's personal group
             await self.channel_layer.group_send(
-                f"user_{recipient_id}",
+                f"user_{self.user.id}",
                 {
-                    "type": "chat.message",
+                    "type": "direct_message",
                     "message": {
                         "id": message.id,
                         "sender": self.user.username,
@@ -105,6 +106,20 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                     }
                 }
             )
+
+            # await self.send_json({
+            #     "type": "confirmation",
+            #     "message": "Direct message sent successfully",
+            #     "message_id": message.id
+            # })
+
+    async def direct_message(self, event):
+        """Handler for direct messages"""
+        print(f"Received message event: {event}")
+        
+        # Send message to WebSocket
+        print(f"Sending message: {event['message']} with type {type(event['message'])}")
+        await self.send_json(event['message'])
     
     async def handle_add_team_member(self, content):
         team_id = content.get('team_id')
@@ -116,13 +131,22 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 await self.channel_layer.group_send(
                     f"team_{team_id}",
                     {
-                        "type": "member.added",
+                        "type": "member_added",
                         "data": {
                             "team_id": team_id,
                             "user_id": user_id
                         }
                     }
                 )
+    
+    async def member_added(self, event):
+        """Handler for broadcasting chat messages to clients."""
+        print(f"Received message event: {event}")
+        
+        # Send message to WebSocket
+        print(f"Sending message: {event['data']} with type {type(event['data'])}")
+        await self.send_json(event["data"])
+    
     
     async def handle_get_channel_messages(self, content):
         channel_id = content.get('channel_id')
@@ -133,6 +157,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 "channel_id": channel_id,
                 "messages": messages
             })
+
     
     async def handle_get_direct_messages(self, content):
         user_id = content.get('user_id')
@@ -212,6 +237,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             )
             print("Message sent to channel group")
 
+
     async def handle_create_channel(self, content):
         team_id = content.get('team_id')
         channel_name = content.get('name')
@@ -222,7 +248,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 await self.channel_layer.group_send(
                     f"team_{team_id}",
                     {
-                        "type": "channel.created",
+                        "type": "channel_created",
                         "channel": {
                             "id": channel.id,
                             "name": channel.name,
@@ -230,6 +256,13 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                         }
                     }
                 )
+            
+    async def channel_created(self, event):
+        print(f"Received message event: {event}")
+        
+        # Send message to WebSocket
+        print(f"Sending message: {event['channel']} with type {type(event['channel'])}")
+        await self.send_json(event["channel"])
 
     async def handle_team_notification(self, content):
         team_id = content.get('team_id')
@@ -239,7 +272,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             await self.channel_layer.group_send(
                 f"team_{team_id}",
                 {
-                    "type": "team.notification",
+                    "type": "team_notification",
                     "notification": {
                         "type": notification_type,
                         "team_id": team_id,
