@@ -162,3 +162,14 @@ class MessageViewSet(viewsets.ModelViewSet):
         ).order_by('created_at')
         serializer = MessageSerializer(messages, many=True)
         return Response(serializer.data)
+
+    @action(detail=True, methods=['delete'])
+    def delete_message(self, request, pk=None):
+        message = get_object_or_404(Message, id=pk)
+
+        if message.sender != request.user: 
+            return Response({"Error": "You can only delete your messages"}, status=status.HTTP_403_FORBIDDEN)
+        
+        message.delete()
+
+        return Response({"Message": "Message deleted Successfully"}, status=status.HTTP_200_OK)

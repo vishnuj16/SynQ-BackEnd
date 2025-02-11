@@ -38,6 +38,8 @@ class JwtAuthMiddleware(BaseMiddleware):
 
         if not token:
             token = query_params.get('token', [None])[0]
+            if token:
+                print(f"Toke recieved from Query Params : {token}")
 
         if token:
             data = jwt_decode(token, settings.SIMPLE_JWT["SIGNING_KEY"], algorithms=["HS256"])

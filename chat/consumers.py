@@ -72,7 +72,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             'get_direct_messages': self.handle_get_direct_messages,
             'get_team_channels': self.handle_get_team_channels,
             'get_team_members': self.handle_get_team_members,
-            'get_interacted_users': self.handle_get_interacted_users
+            'get_interacted_users': self.handle_get_interacted_users,
+            'delete_message': self.handle_delete_message
         }
 
         handler = handlers.get(message_type)
@@ -91,7 +92,6 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         print("test")
         message = await self.save_direct_message(recipient_id, message_text)
         if message:
-            # Send to recipient's personal group
             await self.channel_layer.group_send(
                 f"user_{self.user.id}",
                 {
@@ -107,11 +107,20 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 }
             )
 
-            # await self.send_json({
-            #     "type": "confirmation",
-            #     "message": "Direct message sent successfully",
-            #     "message_id": message.id
-            # })
+            await self.channel_layer.group_send(
+                f"user_{recipient_id}",
+                {
+                    "type": "direct_message",
+                    "message": {
+                        "id": message.id,
+                        "sender": self.user.username,
+                        "content": message_text,
+                        "timestamp": str(message.created_at),
+                        "message_type": "direct",
+                        "recipient_id": recipient_id
+                    }
+                }
+            )
 
     async def direct_message(self, event):
         """Handler for direct messages"""
@@ -146,6 +155,63 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         # Send message to WebSocket
         print(f"Sending message: {event['data']} with type {type(event['data'])}")
         await self.send_json(event["data"])
+
+    async def handle_delete_message(self, content):
+        print("Entering handle_delete_message method")
+        print(f"Received content: {content}")
+
+        message_id = content.get('message_id')
+        message_type = content.get('type')  
+        channel_id = await self.get_channel_for_message(message_id)
+
+        print(f"Message ID: {message_id}")
+        print(f"Message Type: {message_type}")
+
+        if not message_id or not message_type:
+            print("Missing message_id or message_type")
+            return
+
+        try:
+            # Use await with the database_sync_to_async method
+            print("Attempting to delete message")
+            deleted = await self.delete_message(message_id, message_type)
+            print(f"Delete result: {deleted}")
+            
+            if deleted:
+                print("Message deletion confirmed")
+                if message_type == 'direct':
+                    print(f"Sending direct message deletion to user_{self.user.id}")
+                    await self.channel_layer.group_send(
+                        f"user_{self.user.id}",
+                        {
+                            "type": "message_deleted",
+                            "data": {
+                                "message_id": message_id,
+                                "message_type": "direct"
+                            }
+                        }
+                    )
+                    print("Direct message deletion broadcast sent")
+                elif message_type == 'channels':
+                    print("Processing channel message deletion")
+                    print(f"Retrieved channel ID: {channel_id}")
+                    
+                    if channel_id:
+                        print(f"Sending channel message deletion to channel_{channel_id}")
+                        await self.channel_layer.group_send(
+                            f"channel_{channel_id}",
+                            {
+                                "type": "message_deleted",
+                                "data": {
+                                    "type": "message_deleted",
+                                    "message_id": message_id,
+                                    "message_type": "channels"
+                                }
+                            }
+                        )
+                        print("Channel message deletion broadcast sent")
+        except Exception as e:
+            print(f"Error in handle_delete_message: {e}")
     
     
     async def handle_get_channel_messages(self, content):
@@ -441,3 +507,33 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             }
             for user in interacted_users
         ]
+
+    @database_sync_to_async
+    def delete_message(self, message_id, message_type):
+        try:
+            print(f"Attempting to delete message {message_id} of type {message_type}")
+            message = Message.objects.get(id=message_id, sender=self.user, message_type=message_type)
+            print("Message found, proceeding with deletion")
+            message.delete()
+            print("Message deleted successfully")
+            return True
+        except Message.DoesNotExist:
+            print("Message not found or user not authorized to delete")
+            return False
+
+    @database_sync_to_async
+    def get_channel_for_message(self, message_id):
+        try:
+            print(f"Retrieving channel for message {message_id}")
+            message = Message.objects.get(id=message_id)
+            channel_id = message.channel.id if message.channel else None
+            print(f"Retrieved channel ID: {channel_id}")
+            return channel_id
+        except Message.DoesNotExist:
+            print("Message not found when retrieving channel")
+            return None
+
+    async def message_deleted(self, event):
+        """Handler for message deletion events"""
+        print(f"Received message deletion event: {event}")
+        await self.send_json(event['data'])
