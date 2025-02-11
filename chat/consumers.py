@@ -85,6 +85,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
     async def handle_direct_message(self, content):
         recipient_id = content.get('recipient')
         message_text = content.get('content')
+        team_id = content.get('team_id')
 
         if not all([recipient_id, message_text]):
             return
@@ -102,6 +103,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                         "content": message_text,
                         "timestamp": str(message.created_at),
                         "message_type": "direct",
+                        "team_id" : team_id,
                         "recipient_id": recipient_id
                     }
                 }
@@ -117,6 +119,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                         "content": message_text,
                         "timestamp": str(message.created_at),
                         "message_type": "direct",
+                        "team_id" : team_id,
                         "recipient_id": recipient_id
                     }
                 }

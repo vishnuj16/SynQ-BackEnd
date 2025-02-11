@@ -47,3 +47,14 @@ class Message (models.Model):
         else:
             return f'{self.sender.username} in {self.channel.name}'
 
+class TeamInvitation(models.Model):
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='invitations')
+    created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='created_invitations')
+    invite_code = models.CharField(max_length=20, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['-created_at']
+

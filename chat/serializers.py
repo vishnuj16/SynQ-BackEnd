@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Message, Channel, Team
+from .models import Message, Channel, Team, TeamInvitation
 from django.contrib.auth.models import User
 
 class UserSerializer(serializers.ModelSerializer):
@@ -26,3 +26,9 @@ class MessageSerializer(serializers.ModelSerializer):
         model = Message
         fields = ['id', 'sender', 'content', 'recipient', 'channel', 'message_type', 'created_at']
         read_only_fields = ['sender', 'created_at']
+
+class TeamInvitationSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = TeamInvitation
+        fields = ['id', 'team', 'invite_code', 'created_at', 'expires_at', 'is_active']
+        read_only_fields = ['invite_code', 'created_at', 'expires_at']

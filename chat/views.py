@@ -6,8 +6,13 @@ from django.shortcuts import get_object_or_404
 from django.db.models import Q
 from django.contrib.auth.models import User
 
-from .models import Team, Channel, Message
-from .serializers import TeamSerializer, ChannelSerializer, MessageSerializer, UserSerializer
+from django.utils import timezone
+from datetime import timedelta
+from django.utils.crypto import get_random_string
+
+
+from .models import Team, Channel, Message, TeamInvitation
+from .serializers import TeamSerializer, ChannelSerializer, MessageSerializer, UserSerializer, TeamInvitationSerializer
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
     """ Viewset to fetch user-related data """
@@ -69,6 +74,141 @@ class TeamViewSet(viewsets.ModelViewSet):
         team.members.add(user)
         
         return Response({'message': f'Added {user.username} to {team.name}'})
+    
+    @action(detail=True, methods=['post'])
+    def create_invitation(self, request, pk=None):
+        """Create a new invitation link for the team"""
+        team = self.get_object()
+        
+        # Check if user has permission to create invitation (optional)
+        if request.user not in team.members.all():
+            return Response(
+                {'error': 'You do not have permission to create invitations for this team'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Generate unique invitation code
+        invite_code = get_random_string(length=12)
+        
+        # Set expiration (e.g., 7 days from now)
+        expires_at = timezone.now() + timedelta(days=7)
+        
+        # Create invitation
+        invitation = TeamInvitation.objects.create(
+            team=team,
+            created_by=request.user,
+            invite_code=invite_code,
+            expires_at=expires_at
+        )
+        
+        invitation_url = f"/join-team/{invite_code}"  # Frontend URL format
+        
+        return Response({
+            'invite_code': invite_code,
+            'invitation_url': invitation_url,
+            'expires_at': expires_at
+        })
+    
+    @action(detail=False, methods=['post'])
+    def join_via_invitation(self, request):
+        """Join a team using an invitation code"""
+        invite_code = request.data.get('invite_code')
+        
+        if not invite_code:
+            return Response(
+                {'error': 'Invitation code is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            invitation = TeamInvitation.objects.get(
+                invite_code=invite_code,
+                is_active=True,
+                expires_at__gt=timezone.now()
+            )
+        except TeamInvitation.DoesNotExist:
+            return Response(
+                {'error': 'Invalid or expired invitation code'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        team = invitation.team
+        
+        # Check if user is already a member
+        if request.user in team.members.all():
+            return Response(
+                {'error': 'You are already a member of this team'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Add user to team
+        team.members.add(request.user)
+        
+        # Add user to all team channels
+        for channel in team.channels.all():
+            channel.members.add(request.user)
+        
+        # Optional: Deactivate invitation after use
+        # invitation.is_active = False
+        # invitation.save()
+        
+        serializer = self.get_serializer(team)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['get'])
+    def invitations(self, request, pk=None):
+        """Get all active invitations for a team"""
+        team = self.get_object()
+        
+        if request.user not in team.members.all():
+            return Response(
+                {'error': 'You do not have permission to view invitations for this team'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        invitations = TeamInvitation.objects.filter(
+            team=team,
+            is_active=True,
+            expires_at__gt=timezone.now()
+        )
+        
+        serializer = TeamInvitationSerializer(invitations, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def revoke_invitation(self, request, pk=None):
+        """Revoke a specific invitation"""
+        team = self.get_object()
+        invite_code = request.data.get('invite_code')
+        
+        if not invite_code:
+            return Response(
+                {'error': 'Invitation code is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            invitation = TeamInvitation.objects.get(
+                team=team,
+                invite_code=invite_code,
+                is_active=True
+            )
+        except TeamInvitation.DoesNotExist:
+            return Response(
+                {'error': 'Invalid invitation code'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        if request.user not in team.members.all():
+            return Response(
+                {'error': 'You do not have permission to revoke invitations for this team'}, 
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        invitation.is_active = False
+        invitation.save()
+        
+        return Response({'message': 'Invitation revoked successfully'})
 
 class ChannelViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
