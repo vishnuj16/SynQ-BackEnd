@@ -42,12 +42,25 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=False, methods=['get'], url_path='interacted')
     def interacted_users(self, request):
         user = request.user
+        team_id = request.query_params.get('team_id')
+
+        if not team_id:
+            return Response({'error': 'team_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Validate if the team exists and the user is part of it
+        team = get_object_or_404(Team, id=team_id, members=user)
+
+        # Get users the current user has interacted with (direct messages)
         interacted_users = User.objects.filter(
-            Q(sent_messages__recipient=user, sent_messages__message_type='direct') | 
-            Q(received_messages__sender=user, received_messages__message_type='direct')
+            Q(sent_messages__recipient=user, sent_messages__message_type='direct') |
+            Q(received_messages__sender=user, received_messages__message_type='direct'),
+            teams=team  # Ensures filtering only within the given team
         ).distinct()
+
         serializer = self.get_serializer(interacted_users, many=True)
         return Response(serializer.data)
+
+
 
 
 class TeamViewSet(viewsets.ModelViewSet):
