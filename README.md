@@ -199,12 +199,21 @@ backend/
 
 ## Channels Consumers
 
-(Explanation and code snippets for your `consumers.py` file would go here, detailing how WebSockets are handled for sending and receiving messages.)
+The `ChatConsumer` class in `chat/consumers.py` handles WebSocket connections for real-time chat functionality. It uses Django Channels to manage WebSocket connections and Redis as a channel layer.
 
-## Contributing
+**Key Functionality:**
 
-(Guidelines for contributing to the project would be included here.)
+-   **Connection Management:**
+    -   `connect()`:  Accepts the WebSocket connection if the user is authenticated. Adds the user to personal, team, and channel groups in the channel layer for targeted message delivery.
+    -   `disconnect()`: Removes the user from all groups when the WebSocket connection is closed.
 
-## License
-
-(The project's license would be specified here.)
+-   **Message Handling:**
+    -   `receive_json()`:  Receives JSON messages from the WebSocket, determines the message type, and calls the appropriate handler function. It handles various message types, including:
+        -   `channel_message`:  For sending messages to a channel.
+        -   `direct_message`: For sending direct messages to a user.
+        -   `team_notification`: For sending notifications to a team.
+        -   `create_channel`: For creating a new channel within a team.
+        -   `add_team_member`: For adding a new member to a team.
+        -   `get_channel_messages`, `get_direct_messages`, `get_team_channels`, `get_team_members`, `get_interacted_users`: For fetching data and sending it back to the client.
+        -   `delete_message`: For deleting a message (channel or direct).
+        -    `reaction`: For handling reactions to messages
