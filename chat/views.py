@@ -271,10 +271,15 @@ class MessageViewSet(viewsets.ModelViewSet):
         message_type = self.request.data.get('message_type')
         channel_id = self.request.data.get('channel')
         recipient_id = self.request.data.get('recipient')
+        reply_to_id = self.request.data.get('reply_to')
 
         # Ensure valid message_type is provided
         if message_type not in ['channels', 'direct']:
             raise serializers.ValidationError({"message_type": "Invalid message type. Use 'channels' or 'direct'."})
+
+        reply_to = None
+        if reply_to_id:
+            reply_to = get_object_or_404(Message, id=reply_to_id)
 
         # Validate Channel Message
         if message_type == 'channels':
@@ -326,3 +331,48 @@ class MessageViewSet(viewsets.ModelViewSet):
         message.delete()
 
         return Response({"Message": "Message deleted Successfully"}, status=status.HTTP_200_OK)
+
+    
+    @action(detail=True, methods=['post'])
+    def react(self, request, pk=None):
+        """React to a message with enhanced response"""
+        message = get_object_or_404(Message, pk=pk)
+        reaction = request.data.get('reaction')
+
+        if not reaction:
+            return Response({"error": "Reaction is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Initialize reactions dict if None
+        if not message.reactions:
+            message.reactions = {}
+
+        user = request.user.username
+        message.reactions[user] = reaction
+        message.save()
+
+        # Return the full reactions object for the frontend
+        return Response({
+            "message_id": message.id,
+            "reactions": message.reactions,
+            "updated_by": user,
+            "reaction": reaction
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['delete'])
+    def remove_reaction(self, request, pk=None):
+        """Remove a reaction from a message with enhanced response"""
+        message = get_object_or_404(Message, pk=pk)
+        user = request.user.username
+
+        if not message.reactions or user not in message.reactions:
+            return Response({"error": "No reaction to remove for this user."}, 
+                          status=status.HTTP_400_BAD_REQUEST)
+
+        del message.reactions[user]
+        message.save()
+
+        return Response({
+            "message_id": message.id,
+            "reactions": message.reactions,
+            "updated_by": user
+        }, status=status.HTTP_200_OK)

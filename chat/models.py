@@ -33,6 +33,8 @@ class Message (models.Model):
 
     sender = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_messages')
     content = models.TextField()
+    reply_to = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='replies')
+    reactions = models.JSONField(null=True, blank=True)
     recipient = models.ForeignKey(User, on_delete=models.CASCADE, related_name='received_messages', null=True, blank=True)
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='messages', null=True, blank=True)
     message_type = models.CharField(max_length=20, choices=MESSAGE_TYPES)
@@ -42,10 +44,17 @@ class Message (models.Model):
         ordering = ('created_at',)
 
     def __str__(self):
-        if self.message_type == 'direct':
-            return f'{self.sender.username} to {self.recipient.username}'
-        else:
-            return f'{self.sender.username} in {self.channel.name}'
+
+        try:
+            if self.channel:
+                return f'Message in {self.channel.name}'
+            return f'Direct message'
+        except Exception:
+            return f'Message {self.id}'
+        # if self.message_type == 'direct':
+        #     return f'{self.sender.username} to {self.recipient.username}'
+        # else:
+        #     return f'{self.sender.username} in {self.channel.name}'
 
 class TeamInvitation(models.Model):
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='invitations')
