@@ -36,6 +36,7 @@ def register_view(request):
 
     refresh = RefreshToken.for_user(user)
     return Response({
+        'user_id': user.id,
         'message': 'User created successfully',
         'refresh': str(refresh),
         'access': str(refresh.access_token),
@@ -60,6 +61,7 @@ def login_view(request):
      
     refresh = RefreshToken.for_user(authenticated_user)
     return Response({
+        'user_id': authenticated_user.id,
         'message': 'User created successfully',
         'refresh': str(refresh),
         'access': str(refresh.access_token),

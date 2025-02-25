@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import Message, Channel, Team, TeamInvitation
+from .models import Message, Channel, Team, TeamInvitation, DirectMessageChannel
 from django.contrib.auth.models import User
 
 class UserSerializer(serializers.ModelSerializer):
@@ -17,14 +17,23 @@ class ChannelSerializer(serializers.ModelSerializer):
     members = UserSerializer(many=True, read_only=True)
     class Meta:
         model = Channel
-        fields = ['id', 'name', 'description', 'team', 'members', 'created_at']
+        fields = ['id', 'name', 'description', 'team', 'members', 'created_at', 'channel_type', 'is_direct_message']
+
+class DirectMessageChannelSerializer(serializers.ModelSerializer):
+    user1 = UserSerializer(read_only=True)
+    user2 = UserSerializer(read_only=True)
+    channel = ChannelSerializer(read_only=True)
+    
+    class Meta:
+        model = DirectMessageChannel
+        fields = ['id', 'channel', 'user1', 'user2']
 
 class MessageSerializer(serializers.ModelSerializer):
     sender = UserSerializer(read_only=True)
-    recipient = UserSerializer(read_only=True)
+    
     class Meta:
         model = Message
-        fields = ['id', 'sender', 'content', 'recipient', 'channel', 'message_type', 'reply_to', 'reactions', 'created_at']
+        fields = ['id', 'sender', 'content', 'channel', 'reply_to', 'reactions', 'created_at']
         read_only_fields = ['sender', 'created_at']
 
 class TeamInvitationSerializer(serializers.ModelSerializer):

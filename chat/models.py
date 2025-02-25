@@ -4,7 +4,8 @@ from django.contrib.auth.models import User
 # User = get_user_model()
 
 # Create your models here.
-class Team (models.Model):
+
+class Team(models.Model):
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     members = models.ManyToManyField(User, related_name='teams')
@@ -15,46 +16,50 @@ class Team (models.Model):
     def __str__(self):
         return self.name
 
-class Channel (models.Model):
+class Channel(models.Model):
+    CHANNEL_TYPES = (
+        ('group', 'Group Channel'),
+        ('direct', 'Direct Message Channel'),
+    )
+    
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='channels')
     members = models.ManyToManyField(User, related_name='channels')
     created_at = models.DateTimeField(auto_now_add=True)
-
+    channel_type = models.CharField(max_length=10, choices=CHANNEL_TYPES, default='group')
+    # For DM channels, we'll use this to store the participants
+    is_direct_message = models.BooleanField(default=False)
+    
+    class Meta:
+        # Add unique constraint to prevent duplicate DM channels between the same members
+        constraints = [
+            models.UniqueConstraint(
+                fields=['team', 'is_direct_message'],
+                condition=models.Q(is_direct_message=True),
+                name='unique_dm_channel_per_team_members'
+            )
+        ]
+    
     def __str__(self):
         return self.name
 
-class Message (models.Model):
-    MESSAGE_TYPES = (
-        ('channels', 'Channel Message'),
-        ('direct', 'Direct Message'),
-    )
-
+class Message(models.Model):
     sender = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sent_messages')
     content = models.TextField()
+    channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='messages')
     reply_to = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='replies')
     reactions = models.JSONField(null=True, blank=True)
-    recipient = models.ForeignKey(User, on_delete=models.CASCADE, related_name='received_messages', null=True, blank=True)
-    channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='messages', null=True, blank=True)
-    message_type = models.CharField(max_length=20, choices=MESSAGE_TYPES)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ('created_at',)
 
     def __str__(self):
-
         try:
-            if self.channel:
-                return f'Message in {self.channel.name}'
-            return f'Direct message'
+            return f'Message in {self.channel.name}'
         except Exception:
             return f'Message {self.id}'
-        # if self.message_type == 'direct':
-        #     return f'{self.sender.username} to {self.recipient.username}'
-        # else:
-        #     return f'{self.sender.username} in {self.channel.name}'
 
 class TeamInvitation(models.Model):
     team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='invitations')
@@ -67,3 +72,11 @@ class TeamInvitation(models.Model):
     class Meta:
         ordering = ['-created_at']
 
+class DirectMessageChannel(models.Model):
+    """Helper model to find DM channels quickly"""
+    channel = models.OneToOneField(Channel, on_delete=models.CASCADE, related_name='dm_metadata')
+    user1 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='dm_channels_as_user1')
+    user2 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='dm_channels_as_user2')
+    
+    class Meta:
+        unique_together = [['user1', 'user2', 'channel']]
