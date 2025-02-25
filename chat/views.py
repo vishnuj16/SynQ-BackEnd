@@ -259,30 +259,32 @@ class ChannelViewSet(viewsets.ModelViewSet):
         """Create or get a DM channel between the current user and another user"""
         team_id = request.data.get('team_id')
         user_id = request.data.get('user_id')
-        
+
         if not team_id or not user_id:
-            return Response({'error': 'team_id and user_id are required'}, 
-                          status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response({'error': 'team_id and user_id are required'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
         team = get_object_or_404(Team, id=team_id, members=request.user)
         other_user = get_object_or_404(User, id=user_id)
-        
+
         # Make sure other user is in the same team
         if other_user not in team.members.all():
-            return Response({'error': 'User is not a member of this team'}, 
-                          status=status.HTTP_400_BAD_REQUEST)
-        
+            return Response({'error': 'User is not a member of this team'},
+                            status=status.HTTP_400_BAD_REQUEST)
+
+        # Sort users by ID to ensure consistent order
+        user1, user2 = sorted([request.user, other_user], key=lambda u: u.id)
+
         # Try to find existing DM channel
         try:
             dm_channel = DirectMessageChannel.objects.get(
-                Q(user1=request.user, user2=other_user) | 
-                Q(user1=other_user, user2=request.user),
+                user1=user1,
+                user2=user2,
                 channel__team=team
             )
-            # Return existing channel
             serializer = ChannelSerializer(dm_channel.channel)
             return Response(serializer.data)
-        
+
         except DirectMessageChannel.DoesNotExist:
             # Create new DM channel
             channel_name = f"DM: {request.user.username} and {other_user.username}"
@@ -294,18 +296,17 @@ class ChannelViewSet(viewsets.ModelViewSet):
             )
             # Add both users to the channel
             channel.members.add(request.user, other_user)
-            
+
             # Create the DM metadata
-            # Sort users by ID to ensure consistent order
-            user1, user2 = sorted([request.user, other_user], key=lambda u: u.id)
             DirectMessageChannel.objects.create(
                 channel=channel,
                 user1=user1,
                 user2=user2
             )
-            
+
             serializer = ChannelSerializer(channel)
             return Response(serializer.data)
+
 
 class MessageViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]

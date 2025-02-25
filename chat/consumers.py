@@ -4,6 +4,7 @@ from channels.db import database_sync_to_async
 from django.contrib.auth.models import User
 from .models import Team, Channel, Message, DirectMessageChannel
 from django.db.models import Q
+# from asgiref.sync import sync_to_async
 
 class ChatConsumer(AsyncJsonWebsocketConsumer):
     async def connect(self):
@@ -334,6 +335,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         """Handler for team-wide notifications"""
         await self.send_json(event['notification'])
 
+    
+
     async def handle_reaction(self, content):
         """Handle reaction updates and broadcast to relevant users"""
         message_id = content.get('message_id')
@@ -344,6 +347,18 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         if not message_data:
             return
         
+        if message_data.get('reactions') is None:
+            message_data['reactions'] = {}
+        
+        # Update the message_data in-memory
+        username = self.user.username
+        user_id = self.user.id
+        message_data['reactions'][username] = reaction
+        print(f"Updated reactions: {message_data['reactions']}")
+
+        # Save the updated reactions in the database
+        await self.update_message_reactions(message_id, message_data['reactions'])
+
         # All messages are now in channels
         group_name = f"channel_{message_data['channel_id']}"
 
@@ -354,11 +369,24 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 "type": "broadcast_reaction",
                 "message_id": message_id,
                 "reactions": message_data['reactions'],
-                "user_id": self.user.id,
+                "user_id": user_id,
                 "username": self.user.username,
                 "reaction": reaction
             }
         )
+
+    # Helper function to update reactions in the database
+    @database_sync_to_async
+    def update_message_reactions(self, message_id, reactions):
+        from .models import Message
+        try:
+            message = Message.objects.get(id=message_id)
+            message.reactions = reactions
+            message.save()
+        except Message.DoesNotExist:
+            # Handle the case where the message does not exist
+            pass
+
 
     @database_sync_to_async
     def get_message_data(self, message_id):

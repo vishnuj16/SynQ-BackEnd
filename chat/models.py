@@ -33,13 +33,14 @@ class Channel(models.Model):
     
     class Meta:
         # Add unique constraint to prevent duplicate DM channels between the same members
-        constraints = [
-            models.UniqueConstraint(
-                fields=['team', 'is_direct_message'],
-                condition=models.Q(is_direct_message=True),
-                name='unique_dm_channel_per_team_members'
-            )
-        ]
+        # constraints = [
+        #     models.UniqueConstraint(
+        #         fields=['team', 'is_direct_message'],
+        #         condition=models.Q(is_direct_message=True),
+        #         name='unique_dm_channel_per_team_members'
+        #     )
+        # ]
+        pass
     
     def __str__(self):
         return self.name
@@ -79,4 +80,12 @@ class DirectMessageChannel(models.Model):
     user2 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='dm_channels_as_user2')
     
     class Meta:
+        # Ensure that the combination of user1, user2, and channel.team is unique
         unique_together = [['user1', 'user2', 'channel']]
+        # To avoid duplicates due to user order, ensure user1.id < user2.id
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(user1_id__lt=models.F('user2_id')),
+                name='user1_id_lt_user2_id'
+            )
+        ]
