@@ -28,6 +28,7 @@ class Channel(models.Model):
     members = models.ManyToManyField(User, related_name='channels')
     created_at = models.DateTimeField(auto_now_add=True)
     channel_type = models.CharField(max_length=10, choices=CHANNEL_TYPES, default='group')
+    pinned_message_id = models.CharField(max_length=100, blank=True, null=True)
     # For DM channels, we'll use this to store the participants
     is_direct_message = models.BooleanField(default=False)
     
@@ -51,6 +52,8 @@ class Message(models.Model):
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='messages')
     reply_to = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='replies')
     reactions = models.JSONField(null=True, blank=True)
+    is_forwarded = models.BooleanField(default=False, null=True)
+    is_pinned = models.BooleanField(default=False, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

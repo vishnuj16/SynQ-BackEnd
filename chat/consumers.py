@@ -64,6 +64,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         handlers = {
             'channel_message': self.handle_channel_message,
             'direct_message': self.handle_direct_message,
+            'forward_message': self.handle_forward_message,
             'team_notification': self.handle_team_notification,
             'create_channel': self.handle_create_channel,
             'add_team_member': self.handle_add_team_member,
@@ -74,6 +75,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             'get_interacted_users': self.handle_get_interacted_users,
             'delete_message': self.handle_delete_message,
             'reaction': self.handle_reaction,
+            'pin_message': self.handle_pin_message,
+            'unpin_message': self.handle_unpin_message,
         }
 
         handler = handlers.get(message_type)
@@ -285,6 +288,51 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 }
             )
             print("Message sent to channel group")
+    
+    async def handle_forward_message(self, content):
+        print(f"Handling channel message: {content}")
+
+        channel_ids = content.get('channels')
+        content = content.get('content')
+        # reply_to = content.get('reply_to')
+
+        # if not all([channel_id, message_id]):
+        #     print("Missing channel_id or message_text")
+        #     return
+
+        for channel_id in channel_ids:
+            has_access = await self.validate_channel_access(channel_id)
+            print(f"User has access to channel: {has_access}")
+
+            if not has_access:
+                print("User does not have permission to send messages in this channel.")
+                return
+            
+            message = await self.save_channel_message(channel_id, content, is_forwarded=True)
+            print(f"Message saved: {message}")
+
+            if message:
+                team_id = await self.get_team_id_for_channel(channel_id)
+                print(f"Broadcasting message to channel_{channel_id}")
+
+                await self.channel_layer.group_send(
+                    f"channel_{channel_id}",
+                    {
+                        "type": "chat.message",
+                        "message": {
+                            "id": message.id,
+                            "sender": self.user.username,
+                            "content": content,
+                            "timestamp": str(message.created_at),
+                            "type": "channels",
+                            "is_forwarded": True,
+                            "replied_message": message.reply_to.content if message.reply_to else None,
+                            "team_id": team_id,
+                            "channel_id": channel_id
+                        }
+                    }
+                )
+                print("Message sent to channel group")
 
 
     async def handle_create_channel(self, content):
@@ -416,6 +464,85 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             "reaction": event["reaction"]
         })
 
+    async def handle_pin_message(self, content):
+        message_id = content.get('message_id')
+        channel_id = await self.get_channel_for_message(message_id)
+        # messages = await self.get_channel_messages(channel_id)
+
+        if not message_id or not channel_id:
+            return
+
+        try:
+            pinned = await self.pin_message(message_id, channel_id)
+            if pinned:
+                await self.channel_layer.group_send(
+                    f"channel_{channel_id}",
+                    {
+                        "type": "message_pinned",
+                        "data": {
+                            "type": "message_pinned",
+                            "message_id": message_id,
+                            "channel_id": channel_id,
+                            # "messages" : messages
+                        }
+                    }
+                )
+        except Exception as e:
+            print(f"Error in handle_pin_message: {e}")
+
+    async def handle_unpin_message(self, content):
+        message_id = content.get('message_id')
+        channel_id = await self.get_channel_for_message(message_id)
+        # messages = await self.get_channel_messages(channel_id)
+
+        if not message_id or not channel_id:
+            return
+
+        try:
+            unpinned = await self.unpin_message(message_id)
+            if unpinned:
+                await self.channel_layer.group_send(
+                    f"channel_{channel_id}",
+                    {
+                        "type": "message_unpinned",
+                        "data": {
+                            "type": "message_unpinned",
+                            "message_id": message_id,
+                            "channel_id": channel_id,
+                            # "messages" : messages
+                        }
+                    }
+                )
+        except Exception as e:
+            print(f"Error in handle_unpin_message: {e}")
+
+    @database_sync_to_async
+    def pin_message(self, message_id, channel_id):
+        try:
+            Message.objects.filter(channel_id=channel_id, is_pinned=True).update(is_pinned=False)
+            message = Message.objects.get(id=message_id)
+            message.is_pinned = True
+            message.save()
+            return True
+        except Message.DoesNotExist:
+            return False
+
+    @database_sync_to_async
+    def unpin_message(self, message_id):
+        try:
+            message = Message.objects.get(id=message_id)
+            message.is_pinned = False
+            message.save()
+            return True
+        except Message.DoesNotExist:
+            return False
+
+    async def message_pinned(self, event):
+        await self.send_json(event['data'])
+
+    async def message_unpinned(self, event):
+        await self.send_json(event['data'])
+
     @database_sync_to_async
     def get_user_teams(self):
         return list(Team.objects.filter(members=self.user))
@@ -461,7 +588,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def save_channel_message(self, channel_id, message_text, reply_to=None):
+    def save_channel_message(self, channel_id, message_text, reply_to=None, is_forwarded=False):
         try:
             channel = Channel.objects.get(id=channel_id, members=self.user)
             message = Message.objects.get(id=reply_to) if reply_to else None
@@ -470,6 +597,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 channel=channel,
                 content=message_text,
                 reply_to=message,
+                is_forwarded=is_forwarded
             )
         except Channel.DoesNotExist:
             return None
@@ -533,6 +661,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 "timestamp": str(msg.created_at),
                 # "message_type": msg.message_type,
                 "reply_to": msg.reply_to.id if msg.reply_to else None,
+                "is_forwarded": msg.is_forwarded,
+                "is_pinned": msg.is_pinned,
                 "replied_message": msg.reply_to.content if msg.reply_to else None,
                 "reactions": msg.reactions or {}
             }
