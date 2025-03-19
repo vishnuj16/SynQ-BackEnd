@@ -1,9 +1,10 @@
+from datetime import timezone
 from django.db import models
 from django.contrib.auth.models import User
+from django.utils import timezone
+import os
+import uuid
 
-# User = get_user_model()
-
-# Create your models here.
 
 class Team(models.Model):
     name = models.CharField(max_length=100)
@@ -15,6 +16,23 @@ class Team(models.Model):
 
     def __str__(self):
         return self.name
+    
+def get_file_path(instance, filename):
+    """Generate a unique file path for the uploaded file."""
+    ext = filename.split('.')[-1]
+    filename = f"{uuid.uuid4()}.{ext}"
+    return os.path.join('uploads', filename)
+
+class FileAttachment(models.Model):
+    file = models.FileField(upload_to=get_file_path)
+    original_filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100)
+    size = models.IntegerField()  # Size in bytes
+    uploaded_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='uploaded_files')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return self.original_filename
 
 class Channel(models.Model):
     CHANNEL_TYPES = (
@@ -33,14 +51,6 @@ class Channel(models.Model):
     is_direct_message = models.BooleanField(default=False)
     
     class Meta:
-        # Add unique constraint to prevent duplicate DM channels between the same members
-        # constraints = [
-        #     models.UniqueConstraint(
-        #         fields=['team', 'is_direct_message'],
-        #         condition=models.Q(is_direct_message=True),
-        #         name='unique_dm_channel_per_team_members'
-        #     )
-        # ]
         pass
     
     def __str__(self):
@@ -52,9 +62,14 @@ class Message(models.Model):
     channel = models.ForeignKey(Channel, on_delete=models.CASCADE, related_name='messages')
     reply_to = models.ForeignKey('self', null=True, blank=True, on_delete=models.SET_NULL, related_name='replies')
     reactions = models.JSONField(null=True, blank=True)
+    link_preview = models.JSONField(null=True, blank=True)
     is_forwarded = models.BooleanField(default=False, null=True)
     is_pinned = models.BooleanField(default=False, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    is_edited = models.BooleanField(default=False)
+    edited_at = models.DateTimeField(null=True, blank=True)
+    edit_history = models.JSONField(null=True, blank=True)
+    files = models.ManyToManyField(FileAttachment, related_name='messages', blank=True)
 
     class Meta:
         ordering = ('created_at',)
@@ -77,7 +92,6 @@ class TeamInvitation(models.Model):
         ordering = ['-created_at']
 
 class DirectMessageChannel(models.Model):
-    """Helper model to find DM channels quickly"""
     channel = models.OneToOneField(Channel, on_delete=models.CASCADE, related_name='dm_metadata')
     user1 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='dm_channels_as_user1')
     user2 = models.ForeignKey(User, on_delete=models.CASCADE, related_name='dm_channels_as_user2')
@@ -92,3 +106,12 @@ class DirectMessageChannel(models.Model):
                 name='user1_id_lt_user2_id'
             )
         ]
+
+class UserPresence(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='presence')
+    online = models.BooleanField(default=False)
+    last_seen = models.DateTimeField(default=timezone.now)
+    team = models.ForeignKey(Team, on_delete=models.CASCADE, related_name='user_presences')
+
+    class Meta:
+        unique_together = ('user', 'team')

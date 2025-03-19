@@ -1,8 +1,11 @@
+import asyncio
 from django.utils import timezone
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
+import json
 from channels.db import database_sync_to_async
 from django.contrib.auth.models import User
-from .models import Team, Channel, Message, DirectMessageChannel
+from .models import FileAttachment, Team, Channel, Message, DirectMessageChannel, UserPresence
+from asgiref.sync import async_to_sync
 from django.db.models import Q
 # from asgiref.sync import sync_to_async
 
@@ -36,11 +39,38 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             for channel in self.channels:
                 print(f"Adding user to channel_{channel.id}")
                 await self.channel_layer.group_add(f"channel_{channel.id}", self.channel_name)
-
+        
+        for team in self.teams:
+            await self.set_user_online(team.id)
+        
+        # Broadcast to all users in the team that this user is now online
+        for team in self.teams:
+            await self.channel_layer.group_send(
+                f"team_{team.id}",
+                {
+                    "type": "user_presence_update",
+                    "user_id": self.user.id,
+                    "status": "online"
+                }
+            )
 
     async def disconnect(self, close_code):
         if not hasattr(self, 'user') or self.user.is_anonymous:
             return
+
+        for team in self.teams:
+            await self.set_user_offline(team.id)
+
+        for team in self.teams:
+            await self.channel_layer.group_send(
+                f"team_{team.id}",
+                {
+                    "type": "user_presence_update",
+                    "user_id": self.user.id,
+                    "status": "offline"
+                }
+            )
+        
 
         # Leave personal group
         await self.channel_layer.group_discard(f"user_{self.user.id}", self.channel_name)
@@ -59,7 +89,11 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
     async def receive_json(self, content):
         print(f"Received message: {content}")
 
-        message_type = content.get('message_type')
+        message_type = content.get('message_type', None)  
+
+        if message_type == None :
+            print("Message type is missing")
+            return          
 
         handlers = {
             'channel_message': self.handle_channel_message,
@@ -77,6 +111,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             'reaction': self.handle_reaction,
             'pin_message': self.handle_pin_message,
             'unpin_message': self.handle_unpin_message,
+            'get_user_presences': self.handle_user_presence_update,
+            'edit_message': self.handle_edit_message,
         }
 
         handler = handlers.get(message_type)
@@ -84,13 +120,24 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             await handler(content)
         else:
             print(f"Unknown message type: {message_type}")
+
+    async def handle_user_presence_update(self, content):
+        team_id = content.get("team_id")
+        presences = await self.get_team_presences(team_id)
+        await self.send_json({
+            "type": "user_presences",
+            "presences": presences
+        })
+
     
     async def handle_direct_message(self, content):
         recipient_id = content.get('recipient_id')
         message_text = content.get('content')
         team_id = content.get('team_id')
         reply_to = content.get('reply_to')
-        channel_id = content.get('channel_id')  # Get the DM channel ID
+        channel_id = content.get('channel_id')
+        link_preview = content.get('link_preview')
+        file_ids = content.get('fileIds', [])  # Get file IDs if present
 
         print("Getting direct message: ", content)
         if not all([recipient_id, message_text, team_id, channel_id]):
@@ -102,9 +149,15 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             print("User does not have permission to send messages in this DM channel.")
             return
 
-        # Save the message to the DM channel
-        message = await self.save_dm_channel_message(channel_id, message_text, reply_to)
+        # Save the message to the DM channel with file attachments
+        message = await self.save_dm_channel_message(channel_id, message_text, link_preview, reply_to, file_ids)
         if message:
+            # Get file attachments information
+            attachments = []
+            if file_ids:
+                # Fetch file information using a database sync to async function
+                attachments = await self.get_file_attachments_info(file_ids)
+            
             await self.channel_layer.group_send(
                 f"channel_{channel_id}",
                 {   
@@ -120,7 +173,9 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                         "replied_message": message.reply_to.content if message.reply_to else None,
                         "team_id": team_id,
                         "channel_id": channel_id,
-                        "recipient_id": recipient_id
+                        "recipient_id": recipient_id,
+                        "link_preview": link_preview,
+                        "attachments": attachments  # Include file attachments
                     }
                 }
             )
@@ -251,6 +306,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         channel_id = content.get('channel')
         message_text = content.get('content')
         reply_to = content.get('reply_to')
+        link_preview = content.get('link_preview')
+        file_ids = content.get('fileIds', [])  # Get file IDs if present
 
         if not all([channel_id, message_text]):
             print("Missing channel_id or message_text")
@@ -263,12 +320,20 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             print("User does not have permission to send messages in this channel.")
             return
 
-        message = await self.save_channel_message(channel_id, message_text, reply_to)
+        message = await self.save_channel_message(channel_id, message_text, link_preview, reply_to, False, file_ids)
         print(f"Message saved: {message}")
 
         if message:
             team_id = await self.get_team_id_for_channel(channel_id)
-            print(f"Broadcasting message to channel_{channel_id}")
+            print(f"Broadcasting message to channel{channel_id}")
+
+            # Get file attachments information
+            attachments = []
+            if file_ids:
+                # Fetch file information using a database sync to async function
+                attachments = await self.get_file_attachments_info(file_ids)
+            
+            print(f"Chck attachments : ", attachments)
 
             await self.channel_layer.group_send(
                 f"channel_{channel_id}",
@@ -283,7 +348,9 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                         "reply_to": reply_to,
                         "replied_message": message.reply_to.content if message.reply_to else None,
                         "team_id": team_id,
-                        "channel_id": channel_id
+                        "channel_id": channel_id,
+                        "link_preview": link_preview,
+                        "attachments": attachments  # Include file attachments
                     }
                 }
             )
@@ -359,7 +426,7 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         
         # Send message to WebSocket
         print(f"Sending message: {event['channel']} with type {type(event['channel'])}")
-        await self.send_json(event["channel"])
+        await self.send_json(event)
 
     async def handle_team_notification(self, content):
         team_id = content.get('team_id')
@@ -383,7 +450,98 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         """Handler for team-wide notifications"""
         await self.send_json(event['notification'])
 
-    
+    async def handle_edit_message(self, content):
+        """Handle editing an existing message with edit history tracking"""
+        message_id = content.get('message_id')
+        new_content = content.get('content')
+        
+        if not message_id or not new_content:
+            print("Missing message_id or new_content")
+            return
+        
+        # Get the channel ID for broadcasting the update
+        channel_id = await self.get_channel_for_message(message_id)
+        if not channel_id:
+            print("Could not find channel for message")
+            return
+        
+        # Validate if user can edit the message and update it
+        message_updated = await self.edit_message(message_id, new_content)
+        if message_updated:
+            # Get the updated message data to broadcast
+            message_data = await self.get_edited_message_data(message_id)
+            if message_data:
+                await self.channel_layer.group_send(
+                    f"channel_{channel_id}",
+                    {
+                        "type": "message_edited",
+                        "data": {
+                            "type": "message_edited",
+                            "message_id": message_id,
+                            "content": new_content,
+                            "edited_at": message_data['edited_at'],
+                            "is_edited": True,
+                            "edit_history": message_data['edit_history'],
+                            "channel_id": channel_id
+                        }
+                    }
+                )
+                print(f"Message {message_id} edit broadcasted to channel_{channel_id}")
+
+    @database_sync_to_async
+    def edit_message(self, message_id, new_content):
+        """Update a message's content with edit history tracking"""
+        try:
+            message = Message.objects.get(id=message_id, sender=self.user)
+            
+            # Initialize edit_history if it doesn't exist
+            if not hasattr(message, 'edit_history') or message.edit_history is None:
+                message.edit_history = []
+            
+            # Add the original content to edit history if this is the first edit
+            if len(message.edit_history) == 0:
+                message.edit_history.append({
+                    'content': message.content,
+                    'edited_at': message.created_at.isoformat()
+                })
+            
+            # Add the current content to history before updating
+            message.edit_history.append({
+                'content': message.content,
+                'edited_at': timezone.now().isoformat()
+            })
+            
+            # Update the message content
+            message.content = new_content
+            message.is_edited = True
+            message.edited_at = timezone.now()
+            message.save()
+            return True
+        except Message.DoesNotExist:
+            print("Message not found or user not authorized to edit")
+            return False
+        except Exception as e:
+            print(f"Error editing message: {e}")
+            return False
+
+    @database_sync_to_async
+    def get_edited_message_data(self, message_id):
+        """Get the edited message data to send in the update"""
+        try:
+            message = Message.objects.get(id=message_id)
+            return {
+                'content': message.content,
+                'edited_at': message.edited_at.isoformat() if message.edited_at else None,
+                'is_edited': message.is_edited,
+                'edit_history': message.edit_history
+            }
+        except Message.DoesNotExist:
+            return None
+
+    async def message_edited(self, event):
+        """Handler for message edit events"""
+        print(f"Received message edit event: {event}")
+        await self.send_json(event['data'])
 
     async def handle_reaction(self, content):
         """Handle reaction updates and broadcast to relevant users"""
@@ -588,31 +746,55 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             return None
 
     @database_sync_to_async
-    def save_channel_message(self, channel_id, message_text, reply_to=None, is_forwarded=False):
+    def save_channel_message(self, channel_id, message_text, link_preview, reply_to=None, is_forwarded=False, file_ids=None):
         try:
             channel = Channel.objects.get(id=channel_id, members=self.user)
             message = Message.objects.get(id=reply_to) if reply_to else None
-            return Message.objects.create(
+
+            print("Check file ids : ", file_ids)
+            
+            # Create the message without files initially
+            new_message = Message.objects.create(
                 sender=self.user,
                 channel=channel,
                 content=message_text,
                 reply_to=message,
-                is_forwarded=is_forwarded
+                is_forwarded=is_forwarded,
+                link_preview=link_preview
             )
+            
+            # Now set the files using the appropriate method
+            for file_id in file_ids:
+                file = FileAttachment.objects.get(id=file_id)
+                new_message.files.add(file)
+            
+            print("Saving message : ", new_message.files.all())
+            return new_message
         except Channel.DoesNotExist:
             return None
 
+
     @database_sync_to_async
-    def save_dm_channel_message(self, channel_id, message_text, reply_to=None):
+    def save_dm_channel_message(self, channel_id, message_text, link_preview, reply_to=None, file_ids=None):
         try:
             channel = Channel.objects.get(id=channel_id, members=self.user, is_direct_message=True)
             message = Message.objects.get(id=reply_to) if reply_to else None
-            return Message.objects.create(
+            
+            # Create the message without files initially
+            new_message = Message.objects.create(
                 sender=self.user,
                 channel=channel,
                 content=message_text,
                 reply_to=message,
+                link_preview=link_preview
             )
+            
+            # Now set the files using the appropriate method
+            for file_id in file_ids:
+                file = FileAttachment.objects.get(id=file_id)
+                new_message.files.add(file)
+            
+            return new_message
         except Channel.DoesNotExist:
             return None
         
@@ -652,22 +834,44 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
     @database_sync_to_async
     def get_channel_messages(self, channel_id):
         messages = Message.objects.filter(channel_id=channel_id).order_by('created_at')
-        return [
-            {
+        message_list = []
+        
+        for msg in messages:
+            # Get file attachments for this message
+            attachments = []
+            try:
+                # Use the 'files' field from the Message model
+                file_attachments = msg.files.all()
+                print("Check attachments in getting them : ", msg.content, " ", file_attachments)
+                for attachment in file_attachments:
+                    attachments.append({
+                        'id': attachment.id,
+                        'filename': attachment.original_filename,
+                        'url': attachment.file.url,
+                        'content_type': attachment.content_type,
+                        'size': attachment.size
+                    })
+            except Exception as e:
+                print(f"Error getting attachments for message {msg.id}: {e}")
+            
+            message_list.append({
                 "id": msg.id,
                 "content": msg.content,
                 "sender": msg.sender.username,
                 "sender_id": msg.sender.id,
                 "timestamp": str(msg.created_at),
-                # "message_type": msg.message_type,
                 "reply_to": msg.reply_to.id if msg.reply_to else None,
                 "is_forwarded": msg.is_forwarded,
                 "is_pinned": msg.is_pinned,
                 "replied_message": msg.reply_to.content if msg.reply_to else None,
-                "reactions": msg.reactions or {}
-            }
-            for msg in messages
-        ]
+                "reactions": msg.reactions or {},
+                "link_preview": msg.link_preview,
+                "is_edited": msg.is_edited,
+                "edited_at": msg.edited_at.isoformat() if msg.edited_at else None,
+                "attachments": attachments  # Add the attachments
+            })
+        
+        return message_list
     
     @database_sync_to_async
     def get_team_channels(self, team_id):
@@ -746,3 +950,66 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         """Handler for message deletion events"""
         print(f"Received message deletion event: {event}")
         await self.send_json(event['data'])
+
+    @database_sync_to_async
+    def set_user_online(self, team_id):
+        presence, created = UserPresence.objects.get_or_create(
+            user=self.user,
+            team_id=team_id,
+            defaults={"online": True, "last_seen": timezone.now()}
+        )
+        if not created:
+            presence.online = True
+            presence.last_seen = timezone.now()
+            presence.save()
+    
+    @database_sync_to_async
+    def set_user_offline(self, team_id):
+        try:
+            presence = UserPresence.objects.get(user=self.user, team_id=team_id)
+            presence.online = False
+            presence.last_seen = timezone.now()
+            presence.save()
+        except UserPresence.DoesNotExist:
+            pass
+    
+    async def user_presence_update(self, event):
+        # Send presence update to WebSocket
+        await self.send_json({
+            "type": "user_presence",
+            "user_id": event["user_id"],
+            "status": event["status"],
+            "timestamp": timezone.now().isoformat()
+        })
+    
+    # Add a new message handler for get_user_presences
+    
+    @database_sync_to_async
+    def get_team_presences(self, team_id):
+        presences = UserPresence.objects.filter(team_id=team_id).select_related('user')
+        result = []
+        for presence in presences:
+            result.append({
+                "user_id": presence.user.id,
+                "username": presence.user.username,
+                "status": "online" if presence.online else "offline",
+                "last_seen": presence.last_seen.isoformat()
+            })
+        return result
+    
+    @database_sync_to_async
+    def get_file_attachments_info(self, file_ids):
+        attachments = []
+        for file_id in file_ids:
+            try:
+                attachment = FileAttachment.objects.get(id=file_id)
+                attachments.append({
+                    'id': attachment.id,
+                    'filename': attachment.original_filename,
+                    'url': attachment.file.url,
+                    'content_type': attachment.content_type,
+                    'size': attachment.size
+                })
+            except FileAttachment.DoesNotExist:
+                pass
+        return attachments

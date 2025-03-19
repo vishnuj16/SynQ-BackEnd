@@ -10,4 +10,7 @@ router.register(r'messages', views.MessageViewSet, basename='message')
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('fetch-link-preview/', views.fetch_preview, name='fetch-preview'),
+    path('upload-file/', views.upload_file, name='upload-file'),
+    path('<int:file_id>/download/', views.download_file, name='download_file'),
 ]

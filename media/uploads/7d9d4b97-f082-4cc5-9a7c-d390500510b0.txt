@@ -1,0 +1,12 @@
+
+4. Interview date needs clarifying. Inteview should not be set to current time. low
+5. Confirmation of video watched popup has design issues, 'Have you watched the video and understand
+the information provided ?' low
+
+8. After selecting te address during mentor flow, the dropdown should vanish, but it remains unless manually pressed
+elsewhere on the screen. low
+9. There is a drop button to expand or minimize each individual reference. But they dont work, simply adds very 
+little space before th e beginning of the form.
+10. No remove button for ech individual reference. 
+
+12. Two references can take the same mail id.

@@ -1,5 +1,7 @@
+import os
+from django.http import FileResponse
 from rest_framework import viewsets, status, serializers
-from rest_framework.decorators import action
+from rest_framework.decorators import action, permission_classes, api_view
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
@@ -13,6 +15,12 @@ from django.utils.crypto import get_random_string
 from .models import Team, Channel, Message, TeamInvitation, DirectMessageChannel
 from .serializers import (TeamSerializer, ChannelSerializer, MessageSerializer, 
                          UserSerializer, TeamInvitationSerializer, DirectMessageChannelSerializer)
+from .utils import fetch_link_preview
+
+from django.core.files.storage import default_storage
+from django.core.files.base import ContentFile
+
+from .models import FileAttachment
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
     """ Viewset to fetch user-related data """
@@ -321,6 +329,7 @@ class MessageViewSet(viewsets.ModelViewSet):
         """Handles posting a message to a channel"""
         channel_id = self.request.data.get('channel')
         reply_to_id = self.request.data.get('reply_to')
+        link_preview = self.request.data.get('link_preview')
 
         if not channel_id:
             raise serializers.ValidationError({"channel": "Channel ID is required for messages."})
@@ -330,12 +339,13 @@ class MessageViewSet(viewsets.ModelViewSet):
         # Check if user is a member of the channel
         if self.request.user not in channel.members.all():
             raise serializers.ValidationError({"error": "You are not a member of this channel."})
+        
 
         reply_to = None
         if reply_to_id:
             reply_to = get_object_or_404(Message, id=reply_to_id)
 
-        serializer.save(sender=self.request.user, channel=channel, reply_to=reply_to)
+        serializer.save(sender=self.request.user, channel=channel, reply_to=reply_to, link_preview=link_preview)
 
     @action(detail=False, methods=['get'])
     def direct_messages(self, request):
@@ -376,6 +386,18 @@ class MessageViewSet(viewsets.ModelViewSet):
         
         message.delete()
         return Response({"Message": "Message deleted Successfully"}, status=status.HTTP_200_OK)
+    
+    @action(detail=False, methods=['post'])
+    def fetch_preview(self, request):
+        """Fetch preview data for a URL"""
+        url = request.data.get('url')
+        
+        if not url:
+            return Response({'error': 'URL is required'}, 
+                        status=status.HTTP_400_BAD_REQUEST)
+        
+        preview_data = fetch_link_preview(url)
+        return Response(preview_data, status=status.HTTP_200_OK)
     
     @action(detail=True, methods=['post'])
     def react(self, request, pk=None):
@@ -420,3 +442,116 @@ class MessageViewSet(viewsets.ModelViewSet):
             "reactions": message.reactions,
             "updated_by": user
         }, status=status.HTTP_200_OK)
+    
+    @action(detail=True, methods=['put', 'patch'])
+    def edit_message(self, request, pk=None):
+        """Edit an existing message with edit history tracking"""
+        message = get_object_or_404(Message, id=pk)
+        
+        # Check if user is the original sender
+        if message.sender != request.user:
+            return Response({"error": "You can only edit your own messages"}, 
+                        status=status.HTTP_403_FORBIDDEN)
+        
+        # Get the new content
+        new_content = request.data.get('content')
+        if not new_content:
+            return Response({"error": "New content is required"}, 
+                        status=status.HTTP_400_BAD_REQUEST)
+        
+        # Initialize edit_history if it doesn't exist
+        if not hasattr(message, 'edit_history') or message.edit_history is None:
+            message.edit_history = []
+        
+        # Add the original content to edit history if this is the first edit
+        if len(message.edit_history) == 0:
+            message.edit_history.append({
+                'content': message.content,
+                'edited_at': message.created_at.isoformat()
+            })
+        
+        # Add the current content to history before updating
+        message.edit_history.append({
+            'content': message.content,
+            'edited_at': timezone.now().isoformat()
+        })
+        
+        # Update the message content
+        message.content = new_content
+        message.is_edited = True
+        message.edited_at = timezone.now()
+        message.save()
+        
+        # Return the updated message
+        serializer = MessageSerializer(message)
+        return Response(serializer.data)
+    
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def fetch_preview(request):
+        """Fetch preview data for a URL"""
+        url = request.data.get('url')
+        
+        if not url:
+            return Response({'error': 'URL is required'}, 
+                        status=status.HTTP_400_BAD_REQUEST)
+        
+        preview_data = fetch_link_preview(url)
+        return Response(preview_data, status=status.HTTP_200_OK)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def upload_file(request):
+    """
+    Upload a file and return the file ID.
+    """
+    if 'file' not in request.FILES:
+        return Response({'error': 'No file provided'}, status=status.HTTP_400_BAD_REQUEST)
+    
+    file_obj = request.FILES['file']
+    
+    # Create a new FileAttachment instance
+    attachment = FileAttachment(
+        file=file_obj,
+        original_filename=file_obj.name,
+        content_type=file_obj.content_type,
+        size=file_obj.size,
+        uploaded_by=request.user
+    )
+    attachment.save()
+    
+    return Response({
+        'id': attachment.id,
+        'filename': attachment.original_filename,
+        'url': request.build_absolute_uri(attachment.file.url),
+        'content_type': attachment.content_type,
+        'size': attachment.size
+    }, status=status.HTTP_201_CREATED)
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def download_file(request, file_id):
+    """
+    Download a file attachment by its ID.
+    """
+    try:
+        # Try to get the file attachment
+        attachment = FileAttachment.objects.get(id=file_id)
+        
+        # Check if the file exists
+        if not attachment.file or not os.path.exists(attachment.file.path):
+            return Response({'error': 'File not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # Open the file and create a FileResponse
+        file_handle = open(attachment.file.path, 'rb')
+        response = FileResponse(file_handle, content_type=attachment.content_type)
+        
+        # Set the content-disposition header to force download with the original filename
+        response['Content-Disposition'] = f'attachment; filename="{attachment.original_filename}"'
+        
+        return response
+    
+    except FileAttachment.DoesNotExist:
+        return Response({'error': 'File not found'}, status=status.HTTP_404_NOT_FOUND)
+    except Exception as e:
+        return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

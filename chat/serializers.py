@@ -33,7 +33,7 @@ class MessageSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Message
-        fields = ['id', 'sender', 'content', 'channel', 'reply_to', 'reactions', 'created_at']
+        fields = ['id', 'sender', 'content', 'channel', 'reply_to', 'reactions', 'link_preview','created_at']
         read_only_fields = ['sender', 'created_at']
 
 class TeamInvitationSerializer(serializers.ModelSerializer):
